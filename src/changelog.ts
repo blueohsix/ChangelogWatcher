@@ -12,13 +12,21 @@ export interface CheckResult {
   error?: string;
 }
 
-// Compute SHA256 hash
-export function computeHash(content: string): string {
+interface ParsedContent {
+  stableContent: string;
+  version: string;
+  formattedChanges: string;
+}
+
+// =============================================================================
+// Utility Functions
+// =============================================================================
+
+function computeHash(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
-// Extract stable content from HTML (removes scripts, styles, etc.)
-export function extractStableContent(html: string, sourceId: string): string {
+function extractStableContent(html: string, sourceId: string): string {
   const $ = cheerio.load(html);
 
   $("script").remove();
@@ -34,12 +42,10 @@ export function extractStableContent(html: string, sourceId: string): string {
     return mainContent.replace(/\s+/g, " ").trim();
   }
 
-  const bodyText = $("body").text();
-  return bodyText.replace(/\s+/g, " ").trim();
+  return $("body").text().replace(/\s+/g, " ").trim();
 }
 
-// Fetch content directly
-async function fetchDirectContent(url: string): Promise<string | null> {
+async function fetchContent(url: string): Promise<string | null> {
   const response = await fetch(url, {
     headers: {
       "User-Agent":
@@ -48,50 +54,10 @@ async function fetchDirectContent(url: string): Promise<string | null> {
     },
   });
 
-  if (!response.ok) {
-    return null;
-  }
-
-  return response.text();
+  return response.ok ? response.text() : null;
 }
 
-// Fetch content via Wayback Machine
-async function fetchWaybackContent(
-  url: string
-): Promise<{ content: string; timestamp: string } | null> {
-  const availabilityUrl = `https://archive.org/wayback/available?url=${encodeURIComponent(url)}`;
-  const availabilityResponse = await fetch(availabilityUrl);
-
-  if (!availabilityResponse.ok) {
-    return null;
-  }
-
-  const availability = await availabilityResponse.json();
-
-  if (!availability.archived_snapshots?.closest?.available) {
-    return null;
-  }
-
-  const snapshot = availability.archived_snapshots.closest;
-  log.info(`  Found Wayback snapshot from ${snapshot.timestamp}`);
-
-  const contentResponse = await fetch(snapshot.url, {
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    },
-  });
-
-  if (!contentResponse.ok) {
-    return null;
-  }
-
-  return { content: await contentResponse.text(), timestamp: snapshot.timestamp };
-}
-
-// Parse version from markdown changelog
-function parseMarkdownVersion(content: string): {
+function extractMarkdownVersion(content: string): {
   version: string;
   changes: string;
 } {
@@ -99,7 +65,6 @@ function parseMarkdownVersion(content: string): {
   let latestVersionInfo = "";
   let version = "";
   let foundFirstVersion = false;
-  let foundSecondVersion = false;
 
   for (const line of lines) {
     const versionMatch = line.match(/^#+\s*\[?(\d+\.\d+\.\d+[^\]]*)\]?/);
@@ -110,10 +75,9 @@ function parseMarkdownVersion(content: string): {
         version = versionMatch[1];
         latestVersionInfo += line + "\n";
       } else {
-        foundSecondVersion = true;
-        break;
+        break; // Found second version, stop
       }
-    } else if (foundFirstVersion && !foundSecondVersion) {
+    } else if (foundFirstVersion) {
       latestVersionInfo += line + "\n";
     }
   }
@@ -124,68 +88,122 @@ function parseMarkdownVersion(content: string): {
   };
 }
 
-// Main function to check a source for changes
+function createGenericUpdate(source: ReleaseSource): {
+  version: string;
+  formattedChanges: string;
+} {
+  return {
+    version: "Update detected",
+    formattedChanges: `${source.name} release notes have been updated.\n\nCheck the latest changes here:\n${source.releasePageUrl}`,
+  };
+}
+
+// =============================================================================
+// Parser Functions - Each handles fetch + parse for its type
+// =============================================================================
+
+async function parseMarkdown(
+  source: ReleaseSource
+): Promise<ParsedContent | null> {
+  const content = await fetchContent(source.url);
+  if (!content) return null;
+
+  const { version, changes } = extractMarkdownVersion(content);
+
+  return {
+    stableContent: content,
+    version,
+    formattedChanges: changes,
+  };
+}
+
+async function parseHashOnly(
+  source: ReleaseSource
+): Promise<ParsedContent | null> {
+  const content = await fetchContent(source.url);
+  if (!content) return null;
+
+  const { version, formattedChanges } = createGenericUpdate(source);
+
+  return {
+    stableContent: extractStableContent(content, source.id),
+    version,
+    formattedChanges,
+  };
+}
+
+async function parseWayback(
+  source: ReleaseSource
+): Promise<ParsedContent | null> {
+  // Check Wayback Machine availability
+  const availabilityUrl = `https://archive.org/wayback/available?url=${encodeURIComponent(source.url)}`;
+  const availabilityResponse = await fetch(availabilityUrl);
+
+  if (!availabilityResponse.ok) return null;
+
+  const availability = await availabilityResponse.json();
+  const snapshot = availability.archived_snapshots?.closest;
+
+  if (!snapshot?.available) return null;
+
+  log.info(`  Found Wayback snapshot from ${snapshot.timestamp}`);
+
+  // Fetch archived content
+  const content = await fetchContent(snapshot.url);
+  if (!content) return null;
+
+  const { version, formattedChanges } = createGenericUpdate(source);
+
+  return {
+    stableContent: extractStableContent(content, source.id),
+    version,
+    formattedChanges,
+  };
+}
+
+// =============================================================================
+// Main Entry Point
+// =============================================================================
+
 export async function checkSource(source: ReleaseSource): Promise<CheckResult> {
   try {
-    let content: string | null = null;
-    let stableContent: string;
+    // Parse content based on type
+    let parsed: ParsedContent | null;
 
-    // Fetch content based on parser type
-    if (source.parserType === "wayback") {
-      const waybackResult = await fetchWaybackContent(source.url);
-      if (!waybackResult) {
-        log.warn(`  Wayback Machine unavailable for ${source.name}`);
-        return {
-          source,
-          hasChanged: false,
-          error: "Wayback Machine unavailable",
-        };
-      }
-      content = waybackResult.content;
-      stableContent = extractStableContent(content, source.id);
-    } else if (source.parserType === "hash-only") {
-      content = await fetchDirectContent(source.url);
-      if (!content) {
-        return { source, hasChanged: false, error: "Failed to fetch content" };
-      }
-      stableContent = extractStableContent(content, source.id);
-    } else {
-      // markdown
-      content = await fetchDirectContent(source.url);
-      if (!content) {
-        return { source, hasChanged: false, error: "Failed to fetch content" };
-      }
-      stableContent = content; // Use raw content for markdown
+    switch (source.parserType) {
+      case "markdown":
+        parsed = await parseMarkdown(source);
+        break;
+      case "hash-only":
+        parsed = await parseHashOnly(source);
+        break;
+      case "wayback":
+        parsed = await parseWayback(source);
+        break;
+      default:
+        return { source, hasChanged: false, error: `Unknown parser type` };
     }
 
-    // Compute hash and compare
-    const newHash = computeHash(stableContent);
+    if (!parsed) {
+      return { source, hasChanged: false, error: "Failed to fetch content" };
+    }
+
+    // Compare hashes
+    const newHash = computeHash(parsed.stableContent);
     const oldHash = readHash(source);
 
     if (oldHash === newHash) {
       return { source, hasChanged: false };
     }
 
-    // Change detected - save new hash and extract version info
+    // Change detected
     writeHash(source, newHash);
-
-    let version: string;
-    let formattedChanges: string;
-
-    if (source.parserType === "markdown") {
-      const parsed = parseMarkdownVersion(content);
-      version = parsed.version;
-      formattedChanges = parsed.changes;
-    } else {
-      version = "Update detected";
-      formattedChanges = `${source.name} release notes have been updated.\n\nCheck the latest changes here:\n${source.releasePageUrl}`;
-    }
 
     return {
       source,
       hasChanged: true,
-      version,
-      formattedChanges,
+      version: parsed.version,
+      formattedChanges: parsed.formattedChanges,
     };
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
