@@ -10,11 +10,11 @@ Currently monitors:
 ## How It Works
 
 1. Fetches changelog content from each source
-2. Computes a hash and compares with the previous run
-3. If changed, sends a notification to Slack with version info
-4. Stores the new hash for next comparison
+2. Extracts date or computes hash depending on source type
+3. Compares with stored state from previous run
+4. If changed, sends a notification to Slack with version info
 
-No database required - hashes are stored as simple text files.
+No database required - state is stored as simple JSON files.
 
 ## Setup
 
@@ -81,16 +81,16 @@ newsource: {
   name: "New Source",
   url: "https://example.com/changelog",
   parserType: "markdown", // or "hash-only" or "wayback"
-  hashFileName: "changelog_newsource.hash",
+  stateFile: "newsource.json",
   releasePageUrl: "https://example.com/changelog",
   slackWebhookUrl: process.env.SLACK_WEBHOOK_NEWSOURCE || "",
 },
 ```
 
 Parser types:
-- `markdown` - Raw markdown file, extracts version from headers
-- `hash-only` - HTML page, detects any content change
-- `wayback` - Uses Wayback Machine for pages that block bots
+- `markdown` - Raw markdown file, extracts version from headers, uses hash comparison
+- `hash-only` - HTML page, extracts date for comparison (Gemini format: `YYYY.MM.DD`)
+- `wayback` - Uses Wayback Machine for pages that block bots, extracts date
 
 ## Project Structure
 

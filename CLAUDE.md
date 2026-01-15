@@ -8,9 +8,9 @@ This is a simple changelog monitoring tool that checks for updates to AI product
 src/
 ├── index.ts        # CLI entry point - parses args, orchestrates checks
 ├── config.ts       # Source definitions (URLs, webhook env vars)
-├── changelog.ts    # Core logic: fetch, hash, compare, parse
+├── changelog.ts    # Core logic: fetch, parse, compare
 ├── slack.ts        # Slack webhook notification
-├── hash-store.ts   # File-based hash persistence
+├── hash-store.ts   # File-based state persistence
 └── logger.ts       # Console logging with colors
 ```
 
@@ -28,15 +28,15 @@ npm run typecheck          # TypeScript type checking
 ## How It Works
 
 1. Fetches changelog content from configured URLs
-2. Computes SHA256 hash of content
-3. Compares with stored hash in `.data/*.hash`
-4. If changed: extracts version info, sends Slack notification, saves new hash
+2. Extracts date or computes hash depending on parser type
+3. Compares with stored state in `.data/*.json`
+4. If changed: extracts version info, sends Slack notification, saves new state
 
 ## Parser Types
 
-- `markdown`: Direct fetch, regex version extraction (Claude Code)
-- `hash-only`: HTML fetch, stable content extraction (Gemini)
-- `wayback`: Wayback Machine archive lookup (ChatGPT)
+- `markdown`: Direct fetch, regex version extraction, hash comparison (Claude Code)
+- `hash-only`: HTML fetch, date extraction from page (Gemini)
+- `wayback`: Wayback Machine archive lookup, date extraction (ChatGPT)
 
 ## Environment Variables
 

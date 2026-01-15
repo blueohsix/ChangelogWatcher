@@ -7,7 +7,7 @@ export interface ReleaseSource {
   name: string;
   url: string;
   parserType: "markdown" | "hash-only" | "wayback";
-  hashFileName: string;
+  stateFile: string;
   releasePageUrl: string;
   slackWebhookUrl: string;
 }
@@ -18,7 +18,7 @@ export const SOURCES: Record<SourceId, ReleaseSource> = {
     name: "Claude Code",
     url: "https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md",
     parserType: "markdown",
-    hashFileName: "changelog_claude_code.hash",
+    stateFile: "claude.json",
     releasePageUrl: "https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md",
     slackWebhookUrl: process.env.SLACK_WEBHOOK_CLAUDE || "",
   },
@@ -27,7 +27,7 @@ export const SOURCES: Record<SourceId, ReleaseSource> = {
     name: "Gemini",
     url: "https://gemini.google/release-notes/",
     parserType: "hash-only",
-    hashFileName: "changelog_gemini.hash",
+    stateFile: "gemini.json",
     releasePageUrl: "https://gemini.google/release-notes/",
     slackWebhookUrl: process.env.SLACK_WEBHOOK_GEMINI || "",
   },
@@ -36,7 +36,7 @@ export const SOURCES: Record<SourceId, ReleaseSource> = {
     name: "ChatGPT",
     url: "https://help.openai.com/en/articles/6825453-chatgpt-release-notes",
     parserType: "wayback",
-    hashFileName: "changelog_chatgpt.hash",
+    stateFile: "chatgpt.json",
     releasePageUrl:
       "https://help.openai.com/en/articles/6825453-chatgpt-release-notes",
     slackWebhookUrl: process.env.SLACK_WEBHOOK_CHATGPT || "",

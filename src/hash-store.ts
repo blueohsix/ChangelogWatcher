@@ -14,7 +14,7 @@ export function ensureDataDir(): void {
 }
 
 export function readStoredData(source: ReleaseSource): StoredData | null {
-  const filePath = path.join(DATA_DIR, source.hashFileName);
+  const filePath = path.join(DATA_DIR, source.stateFile);
   try {
     const content = fs.readFileSync(filePath, "utf8").trim();
 
@@ -32,7 +32,7 @@ export function readStoredData(source: ReleaseSource): StoredData | null {
 
 export function writeStoredData(source: ReleaseSource, data: StoredData): void {
   ensureDataDir();
-  const filePath = path.join(DATA_DIR, source.hashFileName);
+  const filePath = path.join(DATA_DIR, source.stateFile);
 
   // For sources with dates, store as JSON
   if (data.date) {
