@@ -104,17 +104,6 @@ function getVersionsSince(
   );
 }
 
-function createGenericUpdate(source: ReleaseSource, date?: string): {
-  version: string;
-  formattedChanges: string;
-} {
-  const version = date ? `Updated ${date}` : "Update detected";
-  return {
-    version,
-    formattedChanges: `${source.name} release notes have been updated.\n\nCheck the latest changes here:\n${source.releasePageUrl}`,
-  };
-}
-
 // Extract date from Gemini page (format: YYYY.MM.DD)
 function extractGeminiDate(html: string): string | null {
   const match = html.match(/\d{4}\.\d{2}\.\d{2}/);
@@ -297,33 +286,6 @@ async function parseMarkdown(
   };
 }
 
-async function parseGemini(source: ReleaseSource): Promise<ParserResult> {
-  const content = await fetchContent(source.url);
-  if (!content) {
-    return { success: false, error: "Failed to fetch Gemini page" };
-  }
-
-  const date = extractGeminiDate(content);
-  if (!date) {
-    return { success: false, error: "Could not extract date from Gemini page" };
-  }
-
-  // Extract actual changes for this date
-  const changes = extractGeminiChanges(content, date);
-  const formattedChanges = changes
-    ? `Gemini (${date})\n\n${changes}\n\n${source.releasePageUrl}`
-    : `Gemini release notes updated on ${date}.\n\n${source.releasePageUrl}`;
-
-  return {
-    success: true,
-    version: date, // Use date as the comparison key
-    content: {
-      version: `Updated ${date}`,
-      formattedChanges,
-    },
-  };
-}
-
 // Fetch the newest Wayback snapshot using CDX API (deterministic, unlike /available)
 async function fetchNewestWaybackSnapshot(
   targetUrl: string
@@ -363,7 +325,7 @@ async function fetchNewestWaybackSnapshot(
   return { timestamp, originalUrl };
 }
 
-async function parseChatGPT(source: ReleaseSource): Promise<ParserResult> {
+async function parseWayback(source: ReleaseSource): Promise<ParserResult> {
   // Use CDX API to get the newest snapshot (deterministic, unlike /available)
   const snapshot = await fetchNewestWaybackSnapshot(source.url);
 
@@ -390,7 +352,10 @@ async function parseChatGPT(source: ReleaseSource): Promise<ParserResult> {
   }
 
   const html = await contentResponse.text();
-  const date = extractChatGPTDate(html);
+
+  // Extract date based on source type
+  const date =
+    source.id === "gemini" ? extractGeminiDate(html) : extractChatGPTDate(html);
 
   if (!date) {
     // Fall back to generic update if date extraction fails
@@ -399,11 +364,16 @@ async function parseChatGPT(source: ReleaseSource): Promise<ParserResult> {
 
   const comparisonKey = date || snapshot.timestamp;
 
-  // Extract actual changes for this date
-  const changes = date ? extractChatGPTChanges(html, date) : null;
+  // Extract actual changes for this date based on source type
+  const changes = date
+    ? source.id === "gemini"
+      ? extractGeminiChanges(html, date)
+      : extractChatGPTChanges(html, date)
+    : null;
+
   const formattedChanges = changes
-    ? `ChatGPT (${date})\n\n${changes}\n\n${source.releasePageUrl}`
-    : `ChatGPT release notes updated${date ? ` on ${date}` : ""}.\n\n${source.releasePageUrl}`;
+    ? `${source.name} (${date})\n\n${changes}\n\n${source.releasePageUrl}`
+    : `${source.name} release notes updated${date ? ` on ${date}` : ""}.\n\n${source.releasePageUrl}`;
 
   return {
     success: true,
@@ -423,7 +393,7 @@ export async function checkSource(source: ReleaseSource): Promise<CheckResult> {
   try {
     // Get stored data first (needed for markdown multi-version detection)
     const storedData = readStoredData(source);
-    const storedVersion = storedData?.version || null;
+    const storedVersion = storedData?.identifier || null;
 
     // Parse content based on type
     let result: ParserResult;
@@ -435,12 +405,8 @@ export async function checkSource(source: ReleaseSource): Promise<CheckResult> {
         result = await parseMarkdown(source, storedVersion);
         break;
 
-      case "hash-only":
-        result = await parseGemini(source);
-        break;
-
       case "wayback":
-        result = await parseChatGPT(source);
+        result = await parseWayback(source);
         isTransient = true; // Wayback failures are transient
         break;
 
@@ -462,8 +428,8 @@ export async function checkSource(source: ReleaseSource): Promise<CheckResult> {
       return { source, hasChanged: false };
     }
 
-    // Change detected - save new version
-    writeStoredData(source, { version: result.version });
+    // Change detected - save new identifier
+    writeStoredData(source, { identifier: result.version });
 
     return {
       source,

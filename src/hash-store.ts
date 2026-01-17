@@ -3,8 +3,7 @@ import path from "path";
 import { DATA_DIR, ReleaseSource } from "./config";
 
 export interface StoredData {
-  date?: string; // For date-based sources (Gemini, ChatGPT)
-  version?: string; // For version-based sources (Claude Code)
+  identifier?: string; // Comparison key: semver for Claude, date for Gemini/ChatGPT
 }
 
 export function ensureDataDir(): void {

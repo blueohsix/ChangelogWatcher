@@ -6,7 +6,7 @@ export interface ReleaseSource {
   id: SourceId;
   name: string;
   url: string;
-  parserType: "markdown" | "hash-only" | "wayback";
+  parserType: "markdown" | "wayback";
   stateFile: string;
   releasePageUrl: string;
   slackWebhookUrl: string;
@@ -26,7 +26,7 @@ export const SOURCES: Record<SourceId, ReleaseSource> = {
     id: "gemini",
     name: "Gemini",
     url: "https://gemini.google/release-notes/",
-    parserType: "hash-only",
+    parserType: "wayback",
     stateFile: "gemini.json",
     releasePageUrl: "https://gemini.google/release-notes/",
     slackWebhookUrl: process.env.SLACK_WEBHOOK_GEMINI || "",
