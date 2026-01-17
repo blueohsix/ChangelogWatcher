@@ -16,6 +16,11 @@ interface ParsedContent {
   formattedChanges: string;
 }
 
+interface VersionEntry {
+  version: string;
+  changes: string;
+}
+
 // =============================================================================
 // Utility Functions
 // =============================================================================
@@ -32,35 +37,71 @@ async function fetchContent(url: string): Promise<string | null> {
   return response.ok ? response.text() : null;
 }
 
-function extractMarkdownVersion(content: string): {
-  version: string;
-  changes: string;
-} {
+// Extract ALL versions from a markdown changelog (newest first)
+function extractAllVersions(content: string): VersionEntry[] {
   const lines = content.split("\n");
-  let latestVersionInfo = "";
-  let version = "";
-  let foundFirstVersion = false;
+  const versions: VersionEntry[] = [];
+  let currentVersion: string | null = null;
+  let currentChanges: string[] = [];
 
   for (const line of lines) {
     const versionMatch = line.match(/^#+\s*\[?(\d+\.\d+\.\d+[^\]]*)\]?/);
 
     if (versionMatch) {
-      if (!foundFirstVersion) {
-        foundFirstVersion = true;
-        version = versionMatch[1];
-        latestVersionInfo += line + "\n";
-      } else {
-        break; // Found second version, stop
+      // Save previous version if exists
+      if (currentVersion !== null) {
+        versions.push({
+          version: currentVersion,
+          changes: currentChanges.join("\n").trim(),
+        });
       }
-    } else if (foundFirstVersion) {
-      latestVersionInfo += line + "\n";
+      // Start new version
+      currentVersion = versionMatch[1];
+      currentChanges = [line];
+    } else if (currentVersion !== null) {
+      currentChanges.push(line);
     }
   }
 
-  return {
-    version: version || "Unknown",
-    changes: latestVersionInfo.trim() || content.substring(0, 1000),
-  };
+  // Don't forget the last version
+  if (currentVersion !== null) {
+    versions.push({
+      version: currentVersion,
+      changes: currentChanges.join("\n").trim(),
+    });
+  }
+
+  return versions;
+}
+
+// Compare semantic versions: returns 1 if a > b, -1 if a < b, 0 if equal
+function compareVersions(a: string, b: string): number {
+  const partsA = a.split(".").map(Number);
+  const partsB = b.split(".").map(Number);
+
+  for (let i = 0; i < Math.max(partsA.length, partsB.length); i++) {
+    const numA = partsA[i] || 0;
+    const numB = partsB[i] || 0;
+    if (numA > numB) return 1;
+    if (numA < numB) return -1;
+  }
+  return 0;
+}
+
+// Filter versions to only those newer than lastKnownVersion
+function getVersionsSince(
+  allVersions: VersionEntry[],
+  lastKnownVersion: string | null
+): VersionEntry[] {
+  if (!lastKnownVersion) {
+    // First run: return only the latest version
+    return allVersions.slice(0, 1);
+  }
+
+  // Filter to versions newer than lastKnownVersion
+  return allVersions.filter(
+    (v) => compareVersions(v.version, lastKnownVersion) > 0
+  );
 }
 
 function createGenericUpdate(source: ReleaseSource, date?: string): {
@@ -87,6 +128,86 @@ function extractChatGPTDate(html: string): string | null {
   const regex = new RegExp(`(${months})\\s+\\d{1,2},\\s+20\\d{2}`);
   const match = html.match(regex);
   return match ? match[0] : null;
+}
+
+// Strip HTML tags and normalize whitespace
+function stripHtml(html: string): string {
+  return html
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#039;/g, "'")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Extract changes for a specific date from Gemini page
+// Format: "2025.12.17\nTitle\nWhat: ...\nWhy: ...\n2025.12.16..."
+function extractGeminiChanges(
+  html: string,
+  targetDate: string
+): string | null {
+  const text = stripHtml(html);
+
+  // Find the target date and extract content until the next date
+  const datePattern = /\d{4}\.\d{2}\.\d{2}/g;
+  const dates: { date: string; index: number }[] = [];
+
+  let match;
+  while ((match = datePattern.exec(text)) !== null) {
+    dates.push({ date: match[0], index: match.index });
+  }
+
+  // Find the target date's position
+  const targetIndex = dates.findIndex((d) => d.date === targetDate);
+  if (targetIndex === -1) return null;
+
+  const startPos = dates[targetIndex].index;
+  const endPos =
+    targetIndex + 1 < dates.length ? dates[targetIndex + 1].index : text.length;
+
+  const content = text.slice(startPos, endPos).trim();
+
+  // Clean up: remove the date prefix and format nicely
+  const withoutDate = content.replace(targetDate, "").trim();
+  return withoutDate || null;
+}
+
+// Extract changes for a specific date from ChatGPT page
+// Format: "January 15, 2026\nTitle\nContent...\nJanuary 12, 2026..."
+function extractChatGPTChanges(
+  html: string,
+  targetDate: string
+): string | null {
+  const text = stripHtml(html);
+
+  // Pattern to match dates like "January 15, 2026"
+  const months =
+    "January|February|March|April|May|June|July|August|September|October|November|December";
+  const datePattern = new RegExp(`(${months})\\s+\\d{1,2},\\s+20\\d{2}`, "g");
+
+  const dates: { date: string; index: number }[] = [];
+  let match;
+  while ((match = datePattern.exec(text)) !== null) {
+    dates.push({ date: match[0], index: match.index });
+  }
+
+  // Find the target date's position
+  const targetIndex = dates.findIndex((d) => d.date === targetDate);
+  if (targetIndex === -1) return null;
+
+  const startPos = dates[targetIndex].index;
+  const endPos =
+    targetIndex + 1 < dates.length ? dates[targetIndex + 1].index : text.length;
+
+  const content = text.slice(startPos, endPos).trim();
+
+  // Clean up: remove the date prefix
+  const withoutDate = content.replace(targetDate, "").trim();
+  return withoutDate || null;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -128,20 +249,50 @@ interface ParserResult {
   error?: string;
 }
 
-async function parseMarkdown(source: ReleaseSource): Promise<ParserResult> {
+async function parseMarkdown(
+  source: ReleaseSource,
+  storedVersion: string | null
+): Promise<ParserResult> {
   const content = await fetchContent(source.url);
   if (!content) {
     return { success: false, error: "Failed to fetch Claude Code changelog" };
   }
 
-  const { version, changes } = extractMarkdownVersion(content);
+  const allVersions = extractAllVersions(content);
+  if (allVersions.length === 0) {
+    return { success: false, error: "No versions found in changelog" };
+  }
+
+  const missedVersions = getVersionsSince(allVersions, storedVersion);
+
+  if (missedVersions.length === 0) {
+    // No new versions - return current latest for comparison
+    return {
+      success: true,
+      version: allVersions[0].version,
+      content: {
+        version: allVersions[0].version,
+        formattedChanges: allVersions[0].changes,
+      },
+    };
+  }
+
+  // Combine all missed version changelogs (oldest first for chronological reading)
+  const reversedMissed = [...missedVersions].reverse();
+  const combinedChanges = reversedMissed.map((v) => v.changes).join("\n\n---\n\n");
+
+  // Version display: show range if multiple, single if one
+  const versionDisplay =
+    missedVersions.length === 1
+      ? missedVersions[0].version
+      : `${reversedMissed[0].version} → ${missedVersions[0].version}`;
 
   return {
     success: true,
-    version,
+    version: missedVersions[0].version, // Store the newest
     content: {
-      version,
-      formattedChanges: changes,
+      version: versionDisplay,
+      formattedChanges: combinedChanges,
     },
   };
 }
@@ -157,44 +308,76 @@ async function parseGemini(source: ReleaseSource): Promise<ParserResult> {
     return { success: false, error: "Could not extract date from Gemini page" };
   }
 
-  const { version, formattedChanges } = createGenericUpdate(source, date);
+  // Extract actual changes for this date
+  const changes = extractGeminiChanges(content, date);
+  const formattedChanges = changes
+    ? `Gemini (${date})\n\n${changes}\n\n${source.releasePageUrl}`
+    : `Gemini release notes updated on ${date}.\n\n${source.releasePageUrl}`;
 
   return {
     success: true,
     version: date, // Use date as the comparison key
     content: {
-      version,
+      version: `Updated ${date}`,
       formattedChanges,
     },
   };
 }
 
-async function parseChatGPT(source: ReleaseSource): Promise<ParserResult> {
-  // Check Wayback Machine availability with retry
-  const availabilityUrl = `https://archive.org/wayback/available?url=${encodeURIComponent(source.url)}`;
-  const availabilityResponse = await fetchWithRetry(availabilityUrl);
+// Fetch the newest Wayback snapshot using CDX API (deterministic, unlike /available)
+async function fetchNewestWaybackSnapshot(
+  targetUrl: string
+): Promise<{ timestamp: string; originalUrl: string } | null> {
+  // CDX API: get newest snapshot sorted by timestamp descending
+  const cdxUrl = new URL("https://web.archive.org/cdx/search/cdx");
+  cdxUrl.searchParams.set("url", targetUrl);
+  cdxUrl.searchParams.set("output", "json");
+  cdxUrl.searchParams.set("limit", "1");
+  cdxUrl.searchParams.set("fl", "timestamp,original");
+  cdxUrl.searchParams.set("filter", "statuscode:200");
+  cdxUrl.searchParams.set("sort", "reverse"); // Newest first
 
-  if (!availabilityResponse) {
-    return { success: false, error: "Wayback Machine API unavailable" };
+  const response = await fetchWithRetry(cdxUrl.toString());
+  if (!response) {
+    return null;
   }
 
-  let availability;
+  let data: string[][];
   try {
-    availability = await availabilityResponse.json();
+    data = await response.json();
   } catch {
-    return { success: false, error: "Invalid response from Wayback Machine" };
+    return null;
   }
 
-  const snapshot = availability.archived_snapshots?.closest;
+  // CDX returns: [["timestamp","original"], ["20260115123456","https://..."]]
+  // First row is headers, second row is data
+  if (!Array.isArray(data) || data.length < 2) {
+    return null;
+  }
 
-  if (!snapshot?.available) {
-    return { success: false, error: "No Wayback snapshot available" };
+  const [timestamp, originalUrl] = data[1];
+  if (!timestamp || !originalUrl) {
+    return null;
+  }
+
+  return { timestamp, originalUrl };
+}
+
+async function parseChatGPT(source: ReleaseSource): Promise<ParserResult> {
+  // Use CDX API to get the newest snapshot (deterministic, unlike /available)
+  const snapshot = await fetchNewestWaybackSnapshot(source.url);
+
+  if (!snapshot) {
+    return { success: false, error: "No Wayback snapshot available via CDX" };
   }
 
   log.info(`  Found Wayback snapshot from ${snapshot.timestamp}`);
 
+  // Build snapshot URL: https://web.archive.org/web/{timestamp}/{original_url}
+  const snapshotUrl = `https://web.archive.org/web/${snapshot.timestamp}/${snapshot.originalUrl}`;
+
   // Fetch archived content with retry
-  const contentResponse = await fetchWithRetry(snapshot.url, {
+  const contentResponse = await fetchWithRetry(snapshotUrl, {
     headers: {
       "User-Agent":
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
@@ -215,13 +398,18 @@ async function parseChatGPT(source: ReleaseSource): Promise<ParserResult> {
   }
 
   const comparisonKey = date || snapshot.timestamp;
-  const { version, formattedChanges } = createGenericUpdate(source, date || undefined);
+
+  // Extract actual changes for this date
+  const changes = date ? extractChatGPTChanges(html, date) : null;
+  const formattedChanges = changes
+    ? `ChatGPT (${date})\n\n${changes}\n\n${source.releasePageUrl}`
+    : `ChatGPT release notes updated${date ? ` on ${date}` : ""}.\n\n${source.releasePageUrl}`;
 
   return {
     success: true,
     version: comparisonKey, // Use date or fallback to timestamp
     content: {
-      version,
+      version: date ? `Updated ${date}` : "Update detected",
       formattedChanges,
     },
   };
@@ -233,13 +421,18 @@ async function parseChatGPT(source: ReleaseSource): Promise<ParserResult> {
 
 export async function checkSource(source: ReleaseSource): Promise<CheckResult> {
   try {
+    // Get stored data first (needed for markdown multi-version detection)
+    const storedData = readStoredData(source);
+    const storedVersion = storedData?.version || null;
+
     // Parse content based on type
     let result: ParserResult;
     let isTransient = false;
 
     switch (source.parserType) {
       case "markdown":
-        result = await parseMarkdown(source);
+        // Pass stored version so parseMarkdown can detect ALL missed versions
+        result = await parseMarkdown(source, storedVersion);
         break;
 
       case "hash-only":
@@ -265,9 +458,6 @@ export async function checkSource(source: ReleaseSource): Promise<CheckResult> {
     }
 
     // Compare version/date with stored value
-    const storedData = readStoredData(source);
-    const storedVersion = storedData?.version;
-
     if (storedVersion === result.version) {
       return { source, hasChanged: false };
     }
