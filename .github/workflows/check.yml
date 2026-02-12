@@ -3,7 +3,12 @@ name: Check Changelogs
 on:
   schedule:
     - cron: '30 13 * * *'  # Daily at 07:30 CST (America/Chicago). Note: GitHub Actions uses UTC; during CDT this runs at 08:30 local.
-  workflow_dispatch:      # Manual trigger button
+  workflow_dispatch:
+    inputs:
+      test:
+        description: 'Send notifications to the test channel'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -22,7 +27,7 @@ jobs:
         run: npm ci
 
       - name: Check changelogs
-        run: npm run check
+        run: npm run check ${{ github.event.inputs.test == 'true' && '--test' || '' }}
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
