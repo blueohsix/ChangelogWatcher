@@ -1,6 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import fs from "fs";
-import path from "path";
 import { ensureDataDir, readStoredData, writeStoredData } from "../src/hash-store";
 import { ReleaseSource } from "../src/config";
 
@@ -8,13 +7,12 @@ import { ReleaseSource } from "../src/config";
 vi.mock("fs");
 
 const mockSource: ReleaseSource = {
-  id: "claude",
+  id: "claude-code",
   name: "Claude Code",
   url: "https://example.com/changelog.md",
   parserType: "markdown",
   stateFile: "claude.json",
   releasePageUrl: "https://example.com/changelog",
-  slackWebhookUrl: "https://hooks.slack.com/test",
 };
 
 describe("ensureDataDir", () => {

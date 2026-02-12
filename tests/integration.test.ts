@@ -20,7 +20,6 @@ const mockClaudeSource: ReleaseSource = {
   parserType: "markdown",
   stateFile: "claude-code.json",
   releasePageUrl: "https://example.com/changelog",
-  slackWebhookUrl: "",
 };
 
 const mockGeminiSource: ReleaseSource = {
@@ -30,7 +29,6 @@ const mockGeminiSource: ReleaseSource = {
   parserType: "wayback",
   stateFile: "gemini.json",
   releasePageUrl: "https://gemini.google/release-notes/",
-  slackWebhookUrl: "",
 };
 
 const mockChatGPTSource: ReleaseSource = {
@@ -40,7 +38,6 @@ const mockChatGPTSource: ReleaseSource = {
   parserType: "wayback",
   stateFile: "chatgpt.json",
   releasePageUrl: "https://help.openai.com/chatgpt-release-notes",
-  slackWebhookUrl: "",
 };
 
 const mockClaudeBlogSource: ReleaseSource = {
@@ -50,7 +47,6 @@ const mockClaudeBlogSource: ReleaseSource = {
   parserType: "wayback",
   stateFile: "claude-blog.json",
   releasePageUrl: "https://claude.com/blog",
-  slackWebhookUrl: "",
 };
 
 describe("checkSource integration", () => {
@@ -232,14 +228,56 @@ describe("checkSource integration", () => {
       const result = await checkSource(mockGeminiSource);
 
       expect(result.hasChanged).toBe(true);
-      expect(result.version).toBe("Updated 2025.01.17");
+      expect(result.version).toContain("New Feature Title");
+      expect(result.version).toContain("2025.01.17");
       expect(result.formattedChanges).toContain("New Feature Title");
+      // URL should appear once at end, not per-entry
+      expect(result.formattedChanges).toContain(mockGeminiSource.releasePageUrl);
+      expect(result.formattedChanges!.endsWith(mockGeminiSource.releasePageUrl)).toBe(true);
       expect(hashStore.writeStoredData).toHaveBeenCalledWith(mockGeminiSource, {
         identifier: "2025.01.17",
       });
     });
 
-    it("detects date change", async () => {
+    it("detects multiple missed entries with URL once at end", async () => {
+      vi.mocked(hashStore.readStoredData).mockReturnValue({
+        identifier: "2025.01.10",
+      });
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve([
+            ["timestamp", "original"],
+            ["20250117120000", "https://gemini.google/release-notes/"],
+          ]),
+      });
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        text: () => Promise.resolve(sampleGeminiHtml),
+      });
+
+      const result = await checkSource(mockGeminiSource);
+
+      expect(result.hasChanged).toBe(true);
+      // Should include both entries
+      expect(result.formattedChanges).toContain("New Feature Title");
+      expect(result.formattedChanges).toContain("Older Feature");
+      expect(result.formattedChanges).toContain("2025.01.17");
+      expect(result.formattedChanges).toContain("2025.01.15");
+      // URL should appear once at end, not per-entry
+      expect(result.formattedChanges!.endsWith(mockGeminiSource.releasePageUrl)).toBe(true);
+      // Count occurrences — URL should appear exactly once
+      const urlCount = result.formattedChanges!.split(mockGeminiSource.releasePageUrl).length - 1;
+      expect(urlCount).toBe(1);
+      // Stored identifier is the newest date
+      expect(hashStore.writeStoredData).toHaveBeenCalledWith(mockGeminiSource, {
+        identifier: "2025.01.17",
+      });
+    });
+
+    it("detects single date change", async () => {
       vi.mocked(hashStore.readStoredData).mockReturnValue({
         identifier: "2025.01.15",
       });
@@ -261,7 +299,8 @@ describe("checkSource integration", () => {
       const result = await checkSource(mockGeminiSource);
 
       expect(result.hasChanged).toBe(true);
-      expect(result.version).toBe("Updated 2025.01.17");
+      expect(result.version).toContain("New Feature Title");
+      expect(result.version).toContain("2025.01.17");
     });
 
     it("returns no change when date matches", async () => {
@@ -407,8 +446,12 @@ describe("checkSource integration", () => {
       const result = await checkSource(mockChatGPTSource);
 
       expect(result.hasChanged).toBe(true);
-      expect(result.version).toBe("Updated January 17, 2026");
+      expect(result.version).toContain("New Feature Title");
+      expect(result.version).toContain("January 17, 2026");
       expect(result.formattedChanges).toContain("New Feature Title");
+      // URL should appear once at end
+      expect(result.formattedChanges).toContain(mockChatGPTSource.releasePageUrl);
+      expect(result.formattedChanges!.endsWith(mockChatGPTSource.releasePageUrl)).toBe(true);
       expect(hashStore.writeStoredData).toHaveBeenCalledWith(
         mockChatGPTSource,
         {
@@ -417,7 +460,40 @@ describe("checkSource integration", () => {
       );
     });
 
-    it("detects date change with ChatGPT format", async () => {
+    it("detects multiple missed entries with URL once at end", async () => {
+      vi.mocked(hashStore.readStoredData).mockReturnValue({
+        identifier: "January 1, 2026",
+      });
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve([
+            ["timestamp", "original"],
+            ["20260117120000", "https://help.openai.com/chatgpt-release-notes"],
+          ]),
+      });
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        text: () => Promise.resolve(sampleChatGPTHtml),
+      });
+
+      const result = await checkSource(mockChatGPTSource);
+
+      expect(result.hasChanged).toBe(true);
+      // Should include both new entries
+      expect(result.formattedChanges).toContain("New Feature Title");
+      expect(result.formattedChanges).toContain("Older update");
+      expect(result.formattedChanges).toContain("January 17, 2026");
+      expect(result.formattedChanges).toContain("January 10, 2026");
+      // URL should appear once at end, not per-entry
+      expect(result.formattedChanges!.endsWith(mockChatGPTSource.releasePageUrl)).toBe(true);
+      const urlCount = result.formattedChanges!.split(mockChatGPTSource.releasePageUrl).length - 1;
+      expect(urlCount).toBe(1);
+    });
+
+    it("detects single date change", async () => {
       vi.mocked(hashStore.readStoredData).mockReturnValue({
         identifier: "January 10, 2026",
       });
@@ -439,7 +515,8 @@ describe("checkSource integration", () => {
       const result = await checkSource(mockChatGPTSource);
 
       expect(result.hasChanged).toBe(true);
-      expect(result.version).toBe("Updated January 17, 2026");
+      expect(result.version).toContain("New Feature Title");
+      expect(result.version).toContain("January 17, 2026");
     });
   });
 
@@ -449,10 +526,13 @@ describe("checkSource integration", () => {
         <div>
           <h2>Introducing Claude 4.5</h2>
           <p>February 10, 2026</p>
+          <div><a href="/web/20260210120000/https://claude.com/blog/introducing-claude-4-5">Read more</a></div>
           <h2>Claude gets memory</h2>
           <p>January 28, 2026</p>
+          <div><a href="/web/20260210120000/https://claude.com/blog/claude-gets-memory">Read more</a></div>
           <h2>Model Card update</h2>
           <p>January 15, 2026</p>
+          <div><a href="/web/20260210120000/https://claude.com/blog/model-card-update">Read more</a></div>
         </div>
       </html>
     `;
@@ -474,21 +554,25 @@ describe("checkSource integration", () => {
       });
     }
 
-    it("handles first run - stores newest post title", async () => {
+    it("handles first run - stores newest post title with per-post URL", async () => {
       vi.mocked(hashStore.readStoredData).mockReturnValue(null);
       mockWaybackSuccess(sampleBlogHtml);
 
       const result = await checkSource(mockClaudeBlogSource);
 
       expect(result.hasChanged).toBe(true);
+      expect(result.version).toContain("Introducing Claude 4.5");
+      expect(result.version).toContain("February 10, 2026");
       expect(result.formattedChanges).toContain("Introducing Claude 4");
+      // Per-post URL should be the article URL, not the blog index
+      expect(result.formattedChanges).toContain("https://claude.com/blog/introducing-claude-4-5");
       expect(hashStore.writeStoredData).toHaveBeenCalledWith(
         mockClaudeBlogSource,
         expect.objectContaining({ identifier: expect.stringContaining("Introducing Claude 4") })
       );
     });
 
-    it("detects single new post", async () => {
+    it("detects single new post with per-post URL", async () => {
       vi.mocked(hashStore.readStoredData).mockReturnValue({
         identifier: "Claude gets memory",
       });
@@ -499,9 +583,12 @@ describe("checkSource integration", () => {
       expect(result.hasChanged).toBe(true);
       expect(result.formattedChanges).toContain("Introducing Claude 4");
       expect(result.formattedChanges).not.toContain("Claude gets memory");
+      // Verify "Title (Date): article-URL" format
+      expect(result.formattedChanges).toContain("(February 10, 2026)");
+      expect(result.formattedChanges).toContain("https://claude.com/blog/introducing-claude-4-5");
     });
 
-    it("detects multiple new posts", async () => {
+    it("detects multiple new posts with per-post URLs", async () => {
       vi.mocked(hashStore.readStoredData).mockReturnValue({
         identifier: "Model Card update",
       });
@@ -510,9 +597,13 @@ describe("checkSource integration", () => {
       const result = await checkSource(mockClaudeBlogSource);
 
       expect(result.hasChanged).toBe(true);
-      expect(result.version).toBe("2 new posts");
+      expect(result.version).toContain("Introducing Claude 4.5");
+      expect(result.version).toContain("February 10, 2026");
       expect(result.formattedChanges).toContain("Introducing Claude 4");
       expect(result.formattedChanges).toContain("Claude gets memory");
+      // Each post should have its own article URL
+      expect(result.formattedChanges).toContain("https://claude.com/blog/introducing-claude-4-5");
+      expect(result.formattedChanges).toContain("https://claude.com/blog/claude-gets-memory");
     });
 
     it("returns no change when newest title matches stored", async () => {

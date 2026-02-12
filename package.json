@@ -13,6 +13,7 @@
     "check:gemini": "tsx src/index.ts gemini",
     "check:chatgpt": "tsx src/index.ts chatgpt",
     "check:dry": "tsx src/index.ts --dry-run",
+    "check:test": "tsx src/index.ts --test",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

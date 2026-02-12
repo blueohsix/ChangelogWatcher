@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { SOURCES, SourceId } from "./config";
+import { SOURCES, SourceId, SLACK_WEBHOOK_URL } from "./config";
 import { checkSource } from "./changelog";
 import { sendSlackNotification } from "./slack";
 import * as log from "./logger";
@@ -23,6 +23,7 @@ Targets:
 
 Options:
   --dry-run   Check for changes without sending notifications
+  --test      Send notifications to the test channel instead of live
   --help      Show this help message
 
 Examples:
@@ -31,6 +32,7 @@ Examples:
   npx tsx src/index.ts claude-blog      # Check Claude Blog only
   npx tsx src/index.ts --dry-run        # Dry run all sources
   npx tsx src/index.ts gemini --dry-run
+  npx tsx src/index.ts --test           # Send to test channel
 `);
 }
 
@@ -43,6 +45,7 @@ async function main(): Promise<void> {
   }
 
   const dryRun = args.includes("--dry-run");
+  const testMode = args.includes("--test");
   const target = (args.find((a) => !a.startsWith("--")) || "all") as Target;
 
   if (!VALID_TARGETS.includes(target)) {
@@ -56,6 +59,9 @@ async function main(): Promise<void> {
   console.log("=".repeat(50));
   if (dryRun) {
     log.warn("DRY RUN MODE - No notifications will be sent");
+  }
+  if (testMode) {
+    log.warn("TEST MODE - Notifications will be sent to the test channel");
   }
   console.log();
 
@@ -96,10 +102,11 @@ async function main(): Promise<void> {
       continue;
     }
 
-    const slackResult = await sendSlackNotification(source.slackWebhookUrl, {
+    const slackResult = await sendSlackNotification(SLACK_WEBHOOK_URL, {
       source: source.name,
       version: result.version || "Update detected",
       changes: result.formattedChanges || `Check: ${source.releasePageUrl}`,
+      test: testMode ? "yes" : "no",
     });
 
     if (slackResult.success) {

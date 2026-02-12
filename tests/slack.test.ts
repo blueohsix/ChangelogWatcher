@@ -1,10 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { sendSlackNotification, SlackPayload } from "../src/slack";
 
+vi.mock("../src/logger", () => ({
+  info: vi.fn(),
+  success: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+}));
+
 const testPayload: SlackPayload = {
   source: "Claude Code",
   version: "1.2.3",
   changes: "New features added",
+  test: "no",
 };
 
 describe("sendSlackNotification", () => {
@@ -76,5 +84,17 @@ describe("sendSlackNotification", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(testPayload),
     });
+  });
+
+  it("sends test as 'yes' when in test mode", async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true });
+
+    const payload: SlackPayload = { ...testPayload, test: "yes" };
+    await sendSlackNotification("https://hooks.slack.com/test", payload);
+
+    const body = JSON.parse(
+      (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body
+    );
+    expect(body.test).toBe("yes");
   });
 });
