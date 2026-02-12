@@ -157,9 +157,18 @@ export function parseMonthDayYearDate(dateStr: string): Date | null {
   return new Date(parseInt(year), months[month], parseInt(day));
 }
 
+// Strip Wayback Machine prefix from archived URLs
+// e.g. /web/20260210/https://claude.com/blog/slug → https://claude.com/blog/slug
+export function extractOriginalUrl(href: string): string {
+  const match = href.match(/\/web\/\d+\/(https?:\/\/.+)/);
+  return match ? match[1] : href;
+}
+
 // Strip HTML tags and normalize whitespace
 export function stripHtml(html: string): string {
   return html
+    .replace(/<script[\s>][\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s>][\s\S]*?<\/style>/gi, "")
     .replace(/<[^>]*>/g, " ")
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
@@ -171,71 +180,92 @@ export function stripHtml(html: string): string {
     .trim();
 }
 
-// Extract changes for a specific date from Gemini page
-// Format: "2025.12.17\nTitle\nWhat: ...\nWhy: ...\n2025.12.16..."
-export function extractGeminiChanges(
-  html: string,
-  targetDate: string
-): string | null {
-  const text = stripHtml(html);
-
-  // Find the target date and extract content until the next date
-  const datePattern = /\d{4}\.\d{2}\.\d{2}/g;
-  const dates: { date: string; index: number }[] = [];
-
-  let match;
-  while ((match = datePattern.exec(text)) !== null) {
-    dates.push({ date: match[0], index: match.index });
-  }
-
-  // Find the target date's position
-  const targetIndex = dates.findIndex((d) => d.date === targetDate);
-  if (targetIndex === -1) return null;
-
-  const startPos = dates[targetIndex].index;
-  const endPos =
-    targetIndex + 1 < dates.length ? dates[targetIndex + 1].index : text.length;
-
-  const content = text.slice(startPos, endPos).trim();
-
-  // Clean up: remove the date prefix and format nicely
-  const withoutDate = content.replace(targetDate, "").trim();
-  return withoutDate || null;
+// Convert HTML to text preserving paragraph breaks
+// Block-level tags become \n\n, <br> becomes \n, then tags are stripped
+export function htmlToText(html: string): string {
+  return html
+    .replace(/<script[\s>][\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s>][\s\S]*?<\/style>/gi, "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(?:p|div|h[1-6]|li|tr|blockquote|section|article)>/gi, "\n\n")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#039;/g, "'")
+    .replace(/&nbsp;/g, " ")
+    .replace(/[ \t]+/g, " ")        // collapse horizontal whitespace
+    .replace(/ ?\n ?/g, "\n")       // trim spaces around newlines
+    .replace(/\n{3,}/g, "\n\n")     // max 2 consecutive newlines
+    .trim();
 }
 
-// Extract changes for a specific human-readable date from a page
-// Format: "January 15, 2026\nTitle\nContent...\nJanuary 12, 2026..."
-// Used by ChatGPT and other sources with "Month DD, YYYY" dates
-export function extractMonthDayYearChanges(
-  html: string,
-  targetDate: string
-): string | null {
-  const text = stripHtml(html);
+// =============================================================================
+// Date Entry Parsing Functions (Gemini, ChatGPT)
+// =============================================================================
 
-  // Pattern to match dates like "January 15, 2026"
-  const months =
-    "January|February|March|April|May|June|July|August|September|October|November|December";
-  const datePattern = new RegExp(`(${months})\\s+\\d{1,2},\\s+20\\d{2}`, "g");
+export interface DateEntry {
+  title: string;
+  date: string;
+}
 
+// Extract date-bounded entries from HTML (for Gemini/ChatGPT date-structured pages)
+// Returns entries in page order (newest first) with title = first paragraph of each section
+// Only matches dates at the start of a line to avoid inline date references
+export function extractDateEntries(html: string, datePattern: RegExp): DateEntry[] {
+  const text = htmlToText(html);
+  const entries: DateEntry[] = [];
+
+  // Only match dates at the start of a line (or start of text)
+  const globalPattern = new RegExp(
+    `(?:^|\\n)\\s*(${datePattern.source})`,
+    "g" + (datePattern.flags.replace("g", ""))
+  );
   const dates: { date: string; index: number }[] = [];
   let match;
-  while ((match = datePattern.exec(text)) !== null) {
-    dates.push({ date: match[0], index: match.index });
+  while ((match = globalPattern.exec(text)) !== null) {
+    // Use the captured group (the date itself), not the full match with \n prefix
+    const date = match[1];
+    const dateStart = match.index + match[0].indexOf(date);
+    dates.push({ date, index: dateStart });
   }
 
-  // Find the target date's position
-  const targetIndex = dates.findIndex((d) => d.date === targetDate);
-  if (targetIndex === -1) return null;
+  for (let i = 0; i < dates.length; i++) {
+    const contentStart = dates[i].index + dates[i].date.length;
+    const contentEnd = i + 1 < dates.length ? dates[i + 1].index : text.length;
+    const section = text.slice(contentStart, contentEnd).trim();
 
-  const startPos = dates[targetIndex].index;
-  const endPos =
-    targetIndex + 1 < dates.length ? dates[targetIndex + 1].index : text.length;
+    // First non-empty paragraph is the title
+    const paragraphs = section.split(/\n\n+/).filter((p) => p.trim());
+    let title = paragraphs.length > 0 ? paragraphs[0].trim().replace(/\s+/g, " ") : "";
 
-  const content = text.slice(startPos, endPos).trim();
+    // Clean up update notes that start with ":" (e.g., "Feb 3: We fixed...")
+    title = title.replace(/^:\s*/, "");
 
-  // Clean up: remove the date prefix
-  const withoutDate = content.replace(targetDate, "").trim();
-  return withoutDate || null;
+    if (title) {
+      entries.push({ title, date: dates[i].date });
+    }
+  }
+
+  return entries;
+}
+
+// Return entries newer than storedDate, or only newest on first run
+export function getNewDateEntries(
+  entries: DateEntry[],
+  storedDate: string | null,
+  parserType: "markdown" | "wayback"
+): DateEntry[] {
+  if (entries.length === 0) return [];
+
+  if (!storedDate) {
+    // First run: return only the newest entry
+    return entries.slice(0, 1);
+  }
+
+  // Return all entries with dates newer than stored
+  return entries.filter((e) => isNewerIdentifier(e.date, storedDate, parserType));
 }
 
 // =============================================================================
@@ -245,35 +275,49 @@ export function extractMonthDayYearChanges(
 export interface BlogPost {
   title: string;
   date: string;
+  url?: string;
 }
 
 // Extract blog posts (title + date pairs) from blog HTML, newest first
+// Uses heading-based parsing: finds <h1>-<h6> elements and looks for a date
+// between each heading and the next. Only headings followed by a date are
+// treated as blog posts, which naturally excludes nav/toolbar text.
 export function extractBlogPosts(html: string): BlogPost[] {
   const posts: BlogPost[] = [];
 
-  // Match blog post entries: look for links with titles and nearby dates
-  // Blog pages typically have structured entries with title and date
-  const text = stripHtml(html);
-
-  // Pattern: find human-readable dates and associated titles
-  // Blog posts appear as: "Title text ... Month DD, YYYY"
-  const months =
-    "January|February|March|April|May|June|July|August|September|October|November|December";
-  const datePattern = new RegExp(`(${months})\\s+\\d{1,2},\\s+20\\d{2}`, "g");
-
-  const dates: { date: string; index: number }[] = [];
+  // Find all heading elements with their positions and text
+  const headingRegex = /<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/gi;
+  const headings: { title: string; startIndex: number; endIndex: number }[] = [];
   let match;
-  while ((match = datePattern.exec(text)) !== null) {
-    dates.push({ date: match[0], index: match.index });
+  while ((match = headingRegex.exec(html)) !== null) {
+    const title = stripHtml(match[1]);
+    if (title) {
+      headings.push({
+        title,
+        startIndex: match.index,
+        endIndex: match.index + match[0].length,
+      });
+    }
   }
 
-  // For each date, look backwards for a title (text before the date, after previous date/start)
-  for (let i = 0; i < dates.length; i++) {
-    const startPos = i > 0 ? dates[i - 1].index + dates[i - 1].date.length : 0;
-    const title = text.slice(startPos, dates[i].index).trim();
+  const months =
+    "January|February|March|April|May|June|July|August|September|October|November|December";
+  const dateRegex = new RegExp(`(${months})\\s+\\d{1,2},\\s+20\\d{2}`);
 
-    if (title) {
-      posts.push({ title, date: dates[i].date });
+  // For each heading, look for a date between it and the next heading
+  for (let i = 0; i < headings.length; i++) {
+    const sectionStart = headings[i].endIndex;
+    const sectionEnd = i + 1 < headings.length
+      ? headings[i + 1].startIndex
+      : html.length;
+    const section = html.slice(sectionStart, sectionEnd);
+    const dateMatch = section.match(dateRegex);
+
+    if (dateMatch) {
+      // Look for an article link (e.g. href="/web/TS/https://claude.com/blog/slug")
+      const linkMatch = section.match(/href="([^"]*claude\.com\/blog\/[a-z0-9][^"]*)"/);
+      const url = linkMatch ? extractOriginalUrl(linkMatch[1]) : undefined;
+      posts.push({ title: headings[i].title, date: dateMatch[0], url });
     }
   }
 
@@ -475,35 +519,76 @@ async function parseWayback(
     return parseBlogContent(source, html, storedIdentifier);
   }
 
-  // Extract date based on source type
-  const date =
-    source.id === "gemini" ? extractGeminiDate(html) : extractMonthDayYearDate(html);
+  // Extract all date entries for multi-entry detection
+  const datePattern =
+    source.id === "gemini"
+      ? /\d{4}\.\d{2}\.\d{2}/
+      : new RegExp(
+          `(?:January|February|March|April|May|June|July|August|September|October|November|December)\\s+\\d{1,2},\\s+20\\d{2}`
+        );
 
-  if (!date) {
-    // Fall back to generic update if date extraction fails
-    log.warn("  Could not extract date, using snapshot timestamp");
+  const allEntries = extractDateEntries(html, datePattern);
+
+  if (allEntries.length === 0) {
+    // Fall back: try simple date extraction
+    const date =
+      source.id === "gemini"
+        ? extractGeminiDate(html)
+        : extractMonthDayYearDate(html);
+
+    if (!date) {
+      log.warn("  Could not extract date, using snapshot timestamp");
+      return {
+        success: true,
+        version: snapshot.timestamp,
+        content: {
+          version: "Update detected",
+          formattedChanges: `${source.name} release notes updated.\n\n${source.releasePageUrl}`,
+        },
+      };
+    }
+
+    return {
+      success: true,
+      version: date,
+      content: {
+        version: `${stripHtml(date)}:${date}`,
+        formattedChanges: `${source.name} (${date}): ${source.releasePageUrl}`,
+      },
+    };
   }
 
-  const comparisonKey = date || snapshot.timestamp;
+  const newEntries = getNewDateEntries(allEntries, storedIdentifier, source.parserType);
 
-  // Extract actual changes for this date based on source type
-  const changes = date
-    ? source.id === "gemini"
-      ? extractGeminiChanges(html, date)
-      : extractMonthDayYearChanges(html, date)
-    : null;
+  if (newEntries.length === 0) {
+    // No new entries — return current newest for comparison
+    return {
+      success: true,
+      version: allEntries[0].date,
+      content: {
+        version: `${allEntries[0].title}:${allEntries[0].date}`,
+        formattedChanges: "",
+      },
+    };
+  }
 
-  const formattedChanges = changes
-    ? `${source.name} (${date})\n\n${changes}\n\n${source.releasePageUrl}`
-    : `${source.name} release notes updated${date ? ` on ${date}` : ""}.\n\n${source.releasePageUrl}`;
+  // Format notification: newest entry's date is stored identifier
+  const newest = newEntries[0];
+  const reversedNew = [...newEntries].reverse(); // oldest first for chronological reading
+
+  const formattedChanges = reversedNew
+    .map((e) => `${e.title} (${e.date})`)
+    .join("\n\n")
+    + `\n\n${source.releasePageUrl}`;
 
   return {
     success: true,
-    version: comparisonKey, // Use date or fallback to timestamp
+    version: newest.date, // Store the newest date
     content: {
-      version: date ? `Updated ${date}` : "Update detected",
+      version: `${newest.title}:${newest.date}`,
       formattedChanges,
     },
+    skipRegressionCheck: true, // We handle newness detection via getNewDateEntries
   };
 }
 
@@ -526,31 +611,24 @@ function parseBlogContent(
       success: true,
       version: posts[0].title,
       content: {
-        version: posts[0].title,
+        version: `${posts[0].title}:${posts[0].date}`,
         formattedChanges: "",
       },
     };
   }
 
-  // Combine all new posts (oldest first for chronological reading)
-  const reversedNew = [...newPosts].reverse();
-  const combinedChanges = reversedNew
-    .map((p) => `${p.title} (${p.date})`)
-    .join("\n\n---\n\n");
+  const newest = newPosts[0];
+  const reversedNew = [...newPosts].reverse(); // oldest first for chronological reading
 
-  const formattedChanges = `${source.name}\n\n${combinedChanges}\n\n${source.releasePageUrl}`;
-
-  // Version display: single title if one new post, count if multiple
-  const versionDisplay =
-    newPosts.length === 1
-      ? newPosts[0].title
-      : `${newPosts.length} new posts`;
+  const formattedChanges = reversedNew
+    .map((p) => `${p.title} (${p.date}): ${p.url || source.releasePageUrl}`)
+    .join("\n\n");
 
   return {
     success: true,
-    version: newPosts[0].title, // Store the newest post title
+    version: newest.title, // Store the newest post title
     content: {
-      version: versionDisplay,
+      version: `${newest.title}:${newest.date}`,
       formattedChanges,
     },
     skipRegressionCheck: true, // Blog handles its own newness detection via title matching

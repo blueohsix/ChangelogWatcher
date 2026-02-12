@@ -5,11 +5,13 @@ import {
   isNewerIdentifier,
   getVersionsSince,
   stripHtml,
+  htmlToText,
+  extractOriginalUrl,
   extractGeminiDate,
   extractMonthDayYearDate,
   parseMonthDayYearDate,
-  extractGeminiChanges,
-  extractMonthDayYearChanges,
+  extractDateEntries,
+  getNewDateEntries,
   extractBlogPosts,
   getNewBlogPosts,
   VersionEntry,
@@ -272,6 +274,56 @@ describe("stripHtml", () => {
       "<div class='test'><p>Hello &amp; <em>world</em>!</p></div>";
     expect(stripHtml(html)).toBe("Hello & world !");
   });
+
+  it("removes script element content", () => {
+    const html = "<p>Hello</p><script>var x = 1; alert('xss');</script><p>world</p>";
+    expect(stripHtml(html)).toBe("Hello world");
+  });
+
+  it("removes style element content", () => {
+    const html = "<p>Hello</p><style>.foo { color: red; }</style><p>world</p>";
+    expect(stripHtml(html)).toBe("Hello world");
+  });
+
+  it("removes script with attributes", () => {
+    const html = '<p>Hello</p><script type="text/javascript">var x = 1;</script><p>world</p>';
+    expect(stripHtml(html)).toBe("Hello world");
+  });
+
+  it("removes multiple script/style elements", () => {
+    const html = "<script>a</script><p>Hello</p><style>b</style><script>c</script><p>world</p>";
+    expect(stripHtml(html)).toBe("Hello world");
+  });
+});
+
+describe("htmlToText", () => {
+  it("preserves paragraph breaks", () => {
+    const html = "<p>First paragraph</p><p>Second paragraph</p>";
+    expect(htmlToText(html)).toBe("First paragraph\n\nSecond paragraph");
+  });
+
+  it("converts br to single newline", () => {
+    const html = "Line one<br>Line two<br/>Line three";
+    expect(htmlToText(html)).toBe("Line one\nLine two\nLine three");
+  });
+
+  it("removes script and style content", () => {
+    const html = "<p>Hello</p><script>var x = 1;</script><style>.a{}</style><p>World</p>";
+    expect(htmlToText(html)).toBe("Hello\n\nWorld");
+  });
+
+  it("handles heading close tags as block breaks", () => {
+    const html = "<h2>Title</h2><p>Content</p>";
+    expect(htmlToText(html)).toBe("Title\n\nContent");
+  });
+
+  it("collapses excessive newlines to max two", () => {
+    const html = "<p>A</p><div></div><div></div><div></div><p>B</p>";
+    const result = htmlToText(html);
+    expect(result).not.toMatch(/\n{3,}/);
+    expect(result).toContain("A");
+    expect(result).toContain("B");
+  });
 });
 
 describe("extractGeminiDate", () => {
@@ -345,89 +397,6 @@ describe("extractMonthDayYearDate", () => {
   });
 });
 
-describe("extractGeminiChanges", () => {
-  const sampleHtml = `
-    <div>
-      <h2>2025.01.17</h2>
-      <p>New Feature Title</p>
-      <p>What: Added X</p>
-      <p>Why: Because Y</p>
-      <h2>2025.01.15</h2>
-      <p>Older Feature</p>
-      <p>Details here</p>
-    </div>
-  `;
-
-  it("extracts content for target date", () => {
-    const changes = extractGeminiChanges(sampleHtml, "2025.01.17");
-    expect(changes).not.toBeNull();
-    expect(changes).toContain("New Feature Title");
-    expect(changes).toContain("What: Added X");
-  });
-
-  it("stops at next date boundary", () => {
-    const changes = extractGeminiChanges(sampleHtml, "2025.01.17");
-    expect(changes).not.toContain("Older Feature");
-  });
-
-  it("returns null for non-existent date", () => {
-    const changes = extractGeminiChanges(sampleHtml, "2020.01.01");
-    expect(changes).toBeNull();
-  });
-
-  it("extracts content for last date in document", () => {
-    const changes = extractGeminiChanges(sampleHtml, "2025.01.15");
-    expect(changes).not.toBeNull();
-    expect(changes).toContain("Older Feature");
-  });
-
-  it("removes the date from the returned content", () => {
-    const changes = extractGeminiChanges(sampleHtml, "2025.01.17");
-    expect(changes).not.toContain("2025.01.17");
-  });
-});
-
-describe("extractMonthDayYearChanges", () => {
-  const sampleHtml = `
-    <div>
-      <h2>January 17, 2026</h2>
-      <p>New Feature Title</p>
-      <p>Details about the feature</p>
-      <h2>January 10, 2026</h2>
-      <p>Older update</p>
-      <p>More details</p>
-    </div>
-  `;
-
-  it("extracts content for target date", () => {
-    const changes = extractMonthDayYearChanges(sampleHtml, "January 17, 2026");
-    expect(changes).not.toBeNull();
-    expect(changes).toContain("New Feature Title");
-    expect(changes).toContain("Details about the feature");
-  });
-
-  it("stops at next date boundary", () => {
-    const changes = extractMonthDayYearChanges(sampleHtml, "January 17, 2026");
-    expect(changes).not.toContain("Older update");
-  });
-
-  it("returns null for non-existent date", () => {
-    const changes = extractMonthDayYearChanges(sampleHtml, "February 1, 2020");
-    expect(changes).toBeNull();
-  });
-
-  it("extracts content for last date in document", () => {
-    const changes = extractMonthDayYearChanges(sampleHtml, "January 10, 2026");
-    expect(changes).not.toBeNull();
-    expect(changes).toContain("Older update");
-  });
-
-  it("removes the date from the returned content", () => {
-    const changes = extractMonthDayYearChanges(sampleHtml, "January 17, 2026");
-    expect(changes).not.toContain("January 17, 2026");
-  });
-});
-
 describe("parseMonthDayYearDate", () => {
   it("parses a valid human-readable date", () => {
     const date = parseMonthDayYearDate("January 12, 2026");
@@ -486,30 +455,205 @@ describe("isNewerIdentifier - human-readable dates", () => {
   });
 });
 
+describe("extractDateEntries", () => {
+  it("extracts Gemini-style date entries", () => {
+    const html = `
+      <h2>2025.01.17</h2>
+      <p>New Feature Title</p>
+      <p>What: Added X</p>
+      <h2>2025.01.15</h2>
+      <p>Older Feature</p>
+    `;
+    const entries = extractDateEntries(html, /\d{4}\.\d{2}\.\d{2}/);
+    expect(entries).toHaveLength(2);
+    expect(entries[0].date).toBe("2025.01.17");
+    expect(entries[0].title).toContain("New Feature Title");
+    expect(entries[1].date).toBe("2025.01.15");
+    expect(entries[1].title).toContain("Older Feature");
+  });
+
+  it("extracts ChatGPT-style date entries", () => {
+    const html = `
+      <h2>January 17, 2026</h2>
+      <p>New Feature Title</p>
+      <p>Details about the feature</p>
+      <h2>January 10, 2026</h2>
+      <p>Older update</p>
+    `;
+    const monthPattern = /(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+20\d{2}/;
+    const entries = extractDateEntries(html, monthPattern);
+    expect(entries).toHaveLength(2);
+    expect(entries[0].date).toBe("January 17, 2026");
+    expect(entries[0].title).toContain("New Feature Title");
+    expect(entries[1].date).toBe("January 10, 2026");
+  });
+
+  it("returns empty array when no dates found", () => {
+    const html = "<p>No dates here</p>";
+    const entries = extractDateEntries(html, /\d{4}\.\d{2}\.\d{2}/);
+    expect(entries).toHaveLength(0);
+  });
+
+  it("collapses newlines within titles to single spaces", () => {
+    const html = `
+      <h2>2026.01.28</h2>
+      <p>Meet
+      your new AI browsing assistant:
+      Gemini in Chrome</p>
+    `;
+    const entries = extractDateEntries(html, /\d{4}\.\d{2}\.\d{2}/);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].title).toBe("Meet your new AI browsing assistant: Gemini in Chrome");
+  });
+});
+
+describe("getNewDateEntries", () => {
+  const entries = [
+    { title: "Feature C", date: "2025.01.20" },
+    { title: "Feature B", date: "2025.01.17" },
+    { title: "Feature A", date: "2025.01.15" },
+  ];
+
+  it("returns only newest entry on first run (no stored date)", () => {
+    const result = getNewDateEntries(entries, null, "wayback");
+    expect(result).toHaveLength(1);
+    expect(result[0].title).toBe("Feature C");
+  });
+
+  it("returns entries newer than stored date", () => {
+    const result = getNewDateEntries(entries, "2025.01.15", "wayback");
+    expect(result).toHaveLength(2);
+    expect(result[0].title).toBe("Feature C");
+    expect(result[1].title).toBe("Feature B");
+  });
+
+  it("returns single new entry", () => {
+    const result = getNewDateEntries(entries, "2025.01.17", "wayback");
+    expect(result).toHaveLength(1);
+    expect(result[0].title).toBe("Feature C");
+  });
+
+  it("returns empty when no new entries", () => {
+    const result = getNewDateEntries(entries, "2025.01.20", "wayback");
+    expect(result).toHaveLength(0);
+  });
+
+  it("returns empty for empty entry list", () => {
+    const result = getNewDateEntries([], "2025.01.15", "wayback");
+    expect(result).toHaveLength(0);
+  });
+
+  it("works with Month DD, YYYY format", () => {
+    const monthEntries = [
+      { title: "Update C", date: "February 1, 2026" },
+      { title: "Update B", date: "January 20, 2026" },
+      { title: "Update A", date: "January 10, 2026" },
+    ];
+    const result = getNewDateEntries(monthEntries, "January 10, 2026", "wayback");
+    expect(result).toHaveLength(2);
+    expect(result[0].title).toBe("Update C");
+    expect(result[1].title).toBe("Update B");
+  });
+});
+
+describe("extractOriginalUrl", () => {
+  it("strips Wayback Machine prefix from URL", () => {
+    expect(
+      extractOriginalUrl("/web/20260210120000/https://claude.com/blog/introducing-claude-4")
+    ).toBe("https://claude.com/blog/introducing-claude-4");
+  });
+
+  it("handles http URLs", () => {
+    expect(
+      extractOriginalUrl("/web/20260210/http://example.com/page")
+    ).toBe("http://example.com/page");
+  });
+
+  it("returns original string when no Wayback prefix", () => {
+    expect(extractOriginalUrl("https://claude.com/blog/slug")).toBe(
+      "https://claude.com/blog/slug"
+    );
+  });
+
+  it("returns original string for relative paths", () => {
+    expect(extractOriginalUrl("/blog/slug")).toBe("/blog/slug");
+  });
+});
+
 describe("extractBlogPosts", () => {
-  it("extracts title/date pairs from blog HTML", () => {
+  it("extracts title/date/url from blog HTML with article links", () => {
     const html = `
       <div>
         <h2>Introducing Claude 4.5</h2>
         <p>February 10, 2026</p>
+        <div><a href="/web/20260210120000/https://claude.com/blog/introducing-claude-4-5">Read more</a></div>
         <h2>Claude gets memory</h2>
         <p>January 28, 2026</p>
+        <div><a href="/web/20260210120000/https://claude.com/blog/claude-gets-memory">Read more</a></div>
         <h2>Model Card update</h2>
         <p>January 15, 2026</p>
+        <div><a href="/web/20260210120000/https://claude.com/blog/model-card-update">Read more</a></div>
       </div>
     `;
     const posts = extractBlogPosts(html);
     expect(posts).toHaveLength(3);
     expect(posts[0].title).toContain("Introducing Claude 4");
     expect(posts[0].date).toBe("February 10, 2026");
+    expect(posts[0].url).toBe("https://claude.com/blog/introducing-claude-4-5");
     expect(posts[1].date).toBe("January 28, 2026");
+    expect(posts[1].url).toBe("https://claude.com/blog/claude-gets-memory");
     expect(posts[2].date).toBe("January 15, 2026");
+    expect(posts[2].url).toBe("https://claude.com/blog/model-card-update");
+  });
+
+  it("sets url to undefined when no article link is present", () => {
+    const html = `
+      <div>
+        <h2>Some Post</h2>
+        <p>January 15, 2026</p>
+      </div>
+    `;
+    const posts = extractBlogPosts(html);
+    expect(posts).toHaveLength(1);
+    expect(posts[0].title).toBe("Some Post");
+    expect(posts[0].url).toBeUndefined();
   });
 
   it("returns empty array when no posts found", () => {
     const html = "<html><p>No blog content</p></html>";
     const posts = extractBlogPosts(html);
     expect(posts).toHaveLength(0);
+  });
+
+  it("excludes headings without dates (nav/toolbar)", () => {
+    const html = `
+      <h1>Claude Blog</h1>
+      <nav><h3>Menu</h3></nav>
+      <h2>Real Blog Post</h2>
+      <p>January 15, 2026</p>
+    `;
+    const posts = extractBlogPosts(html);
+    expect(posts).toHaveLength(1);
+    expect(posts[0].title).toBe("Real Blog Post");
+  });
+
+  it("handles Wayback HTML with script/style in headings section", () => {
+    const html = `
+      <script>var wayback = true;</script>
+      <style>.wm-ipp { display: block; }</style>
+      <h2>Introducing Claude 4.5</h2>
+      <p>February 10, 2026</p>
+      <div><a href="/web/20260210/https://claude.com/blog/introducing-claude-4-5">Read more</a></div>
+      <h2>Claude gets memory</h2>
+      <p>January 28, 2026</p>
+      <div><a href="/web/20260210/https://claude.com/blog/claude-gets-memory">Read more</a></div>
+    `;
+    const posts = extractBlogPosts(html);
+    expect(posts).toHaveLength(2);
+    expect(posts[0].title).toBe("Introducing Claude 4.5");
+    expect(posts[0].url).toBe("https://claude.com/blog/introducing-claude-4-5");
+    expect(posts[1].title).toBe("Claude gets memory");
+    expect(posts[1].url).toBe("https://claude.com/blog/claude-gets-memory");
   });
 });
 

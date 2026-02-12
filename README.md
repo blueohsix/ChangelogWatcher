@@ -4,6 +4,7 @@ Monitor AI product changelogs and get Slack notifications when updates are relea
 
 Currently monitors:
 - **Claude Code** - Anthropic's CLI tool
+- **Claude Blog** - Anthropic's blog at claude.com/blog
 - **Gemini** - Google's AI assistant
 - **ChatGPT** - OpenAI's AI assistant
 
@@ -35,7 +36,7 @@ cp .env.example .env
 # Edit .env with your webhook URLs
 ```
 
-The webhooks should be [Slack Workflow Builder](https://slack.com/help/articles/360041352714-Create-more-advanced-workflows-using-webhooks) triggers that accept `source`, `version`, and `changes` fields.
+The webhook should be a [Slack Workflow Builder](https://slack.com/help/articles/360041352714-Create-more-advanced-workflows-using-webhooks) trigger that accepts `source`, `version`, `changes`, and `test` fields. Slack handles routing to per-source channels internally.
 
 ### 3. Run
 
@@ -44,12 +45,16 @@ The webhooks should be [Slack Workflow Builder](https://slack.com/help/articles/
 npm run check
 
 # Check individual sources
-npm run check:claude
+npm run check:claude-code
+npm run check:claude-blog
 npm run check:gemini
 npm run check:chatgpt
 
 # Dry run (no notifications)
 npm run check:dry
+
+# Send to test channel
+npm run check:test
 
 # Run tests
 npm run test
@@ -62,10 +67,8 @@ npm run test
 The included workflow runs hourly automatically. Just add your webhook URLs as repository secrets:
 
 1. Go to **Settings > Secrets and variables > Actions**
-2. Add secrets:
-   - `SLACK_WEBHOOK_CLAUDE`
-   - `SLACK_WEBHOOK_GEMINI`
-   - `SLACK_WEBHOOK_CHATGPT`
+2. Add secret:
+   - `SLACK_WEBHOOK_URL`
 
 You can also trigger manually from the Actions tab.
 
@@ -86,13 +89,14 @@ newsource: {
   parserType: "markdown", // or "wayback"
   stateFile: "newsource.json",
   releasePageUrl: "https://example.com/changelog",
-  slackWebhookUrl: process.env.SLACK_WEBHOOK_NEWSOURCE || "",
 },
 ```
 
+No webhook changes needed — the single `SLACK_WEBHOOK_URL` handles all sources.
+
 Parser types:
 - `markdown` - Raw markdown file, extracts semver from headers (Claude Code)
-- `wayback` - Uses Wayback Machine for pages that block bots, extracts date (Gemini, ChatGPT)
+- `wayback` - Uses Wayback Machine for pages that block bots, extracts dates (Gemini, ChatGPT) or blog posts (Claude Blog)
 
 ## Project Structure
 
