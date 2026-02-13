@@ -6,11 +6,11 @@ on:
   workflow_dispatch:
     inputs:
       test:
-        description: 'Send notifications to the test Slack channel instead of the live channel'
+        description: 'Send notifications with `"test":"yes"`'
         type: boolean
         default: false
       dry-run:
-        description: 'Check all sources for changes without sending Slack notifications or saving state'
+        description: 'Dry run. No notifications. Update states.'
         type: boolean
         default: false
 
