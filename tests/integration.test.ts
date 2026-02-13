@@ -650,6 +650,329 @@ describe("checkSource integration", () => {
     });
   });
 
+  describe("bug fixes", () => {
+    function mockWaybackSuccess(html: string) {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve([
+            ["timestamp", "original"],
+            ["20260210120000", "https://claude.com/blog"],
+          ]),
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        text: () => Promise.resolve(html),
+      });
+    }
+
+    it("featured blog post with different title than stored does not trigger false positive", async () => {
+      // Bug scenario: featured section has a unique old post (not duplicated in
+      // chronological list), so it survives dedup and lands at posts[0] with a
+      // title that differs from stored. Before the fix, parseBlogContent returned
+      // posts[0].title as version, causing a version mismatch → false positive.
+      const blogHtmlWithFeatured = `
+        <html>
+          <div>
+            <!-- Featured section — unique old post NOT in chronological list -->
+            <h2>Spotlight Interview</h2>
+            <p>August 15, 2025</p>
+            <div><a href="/web/20260210/https://claude.com/blog/spotlight-interview">Read more</a></div>
+
+            <!-- Chronological section -->
+            <h2>Newest Post</h2>
+            <p>January 28, 2026</p>
+            <div><a href="/web/20260210/https://claude.com/blog/newest-post">Read more</a></div>
+            <h2>Older Post</h2>
+            <p>January 15, 2026</p>
+            <div><a href="/web/20260210/https://claude.com/blog/older-post">Read more</a></div>
+          </div>
+        </html>
+      `;
+
+      vi.mocked(hashStore.readStoredData).mockReturnValue({
+        identifier: "Newest Post",
+      });
+      mockWaybackSuccess(blogHtmlWithFeatured);
+
+      const result = await checkSource(mockClaudeBlogSource);
+
+      expect(result.hasChanged).toBe(false);
+      expect(hashStore.writeStoredData).not.toHaveBeenCalled();
+    });
+
+    it("no new wayback entries returns storedIdentifier, preventing false positive", async () => {
+      // When the page has entries but none are newer than stored, the parser
+      // returns storedIdentifier as version so checkSource sees no change.
+      // A defense-in-depth guard also catches any future parser bug that
+      // returns a version mismatch with empty formattedChanges.
+      const geminiHtml = `
+        <html>
+          <h2>2025.01.17</h2>
+          <p>Latest Feature</p>
+          <h2>2025.01.15</h2>
+          <p>Older Feature</p>
+        </html>
+      `;
+
+      vi.mocked(hashStore.readStoredData).mockReturnValue({
+        identifier: "2025.01.17",
+      });
+
+      // CDX API response
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve([
+            ["timestamp", "original"],
+            ["20250117120000", "https://gemini.google/release-notes/"],
+          ]),
+      });
+      // Wayback snapshot
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        text: () => Promise.resolve(geminiHtml),
+      });
+
+      const result = await checkSource(mockGeminiSource);
+
+      // Parser fix: version === storedIdentifier → no change
+      expect(result.hasChanged).toBe(false);
+      expect(hashStore.writeStoredData).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("notification format — exact output", () => {
+    const sampleChangelog = `# Changelog
+
+## [1.2.0]
+- Added feature X
+- Fixed bug Y
+
+## [1.1.0]
+- Added feature A
+
+## [1.0.0]
+- Initial release`;
+
+    const sampleGeminiHtml = `
+      <html>
+        <h2>2025.01.17</h2>
+        <p>New Feature Title</p>
+        <p>What: Added X</p>
+        <h2>2025.01.15</h2>
+        <p>Older Feature</p>
+      </html>
+    `;
+
+    const sampleChatGPTHtml = `
+      <html>
+        <h2>January 17, 2026</h2>
+        <p>New Feature Title</p>
+        <p>Details about the feature</p>
+        <h2>January 10, 2026</h2>
+        <p>Older update</p>
+      </html>
+    `;
+
+    const sampleBlogHtml = `
+      <html>
+        <div>
+          <h2>Introducing Claude 4.5</h2>
+          <p>February 10, 2026</p>
+          <div><a href="/web/20260210120000/https://claude.com/blog/introducing-claude-4-5">Read more</a></div>
+          <h2>Claude gets memory</h2>
+          <p>January 28, 2026</p>
+          <div><a href="/web/20260210120000/https://claude.com/blog/claude-gets-memory">Read more</a></div>
+          <h2>Model Card update</h2>
+          <p>January 15, 2026</p>
+          <div><a href="/web/20260210120000/https://claude.com/blog/model-card-update">Read more</a></div>
+        </div>
+      </html>
+    `;
+
+    function mockWaybackFetch(
+      html: string,
+      timestamp: string,
+      originalUrl: string
+    ) {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve([
+            ["timestamp", "original"],
+            [timestamp, originalUrl],
+          ]),
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        text: () => Promise.resolve(html),
+      });
+    }
+
+    describe("Claude Code", () => {
+      it("single update", async () => {
+        vi.mocked(hashStore.readStoredData).mockReturnValue({
+          identifier: "1.1.0",
+        });
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          text: () => Promise.resolve(sampleChangelog),
+        });
+
+        const result = await checkSource(mockClaudeSource);
+
+        expect(result.hasChanged).toBe(true);
+        expect(result.version).toEqual("1.2.0");
+        expect(result.formattedChanges).toEqual(
+          "## [1.2.0]\n- Added feature X\n- Fixed bug Y"
+        );
+      });
+
+      it("multiple missed updates — oldest first, separated by ---", async () => {
+        vi.mocked(hashStore.readStoredData).mockReturnValue({
+          identifier: "1.0.0",
+        });
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          text: () => Promise.resolve(sampleChangelog),
+        });
+
+        const result = await checkSource(mockClaudeSource);
+
+        expect(result.hasChanged).toBe(true);
+        expect(result.version).toEqual("1.1.0 → 1.2.0");
+        expect(result.formattedChanges).toEqual(
+          "## [1.1.0]\n- Added feature A\n\n---\n\n## [1.2.0]\n- Added feature X\n- Fixed bug Y"
+        );
+      });
+    });
+
+    describe("Gemini", () => {
+      it("single update", async () => {
+        vi.mocked(hashStore.readStoredData).mockReturnValue({
+          identifier: "2025.01.15",
+        });
+        mockWaybackFetch(
+          sampleGeminiHtml,
+          "20250117120000",
+          "https://gemini.google/release-notes/"
+        );
+
+        const result = await checkSource(mockGeminiSource);
+
+        expect(result.hasChanged).toBe(true);
+        expect(result.version).toEqual("New Feature Title:2025.01.17");
+        expect(result.formattedChanges).toEqual(
+          "New Feature Title (2025.01.17)\n\nhttps://gemini.google/release-notes/"
+        );
+      });
+
+      it("multiple missed updates — oldest first, URL once at end", async () => {
+        vi.mocked(hashStore.readStoredData).mockReturnValue({
+          identifier: "2025.01.10",
+        });
+        mockWaybackFetch(
+          sampleGeminiHtml,
+          "20250117120000",
+          "https://gemini.google/release-notes/"
+        );
+
+        const result = await checkSource(mockGeminiSource);
+
+        expect(result.hasChanged).toBe(true);
+        expect(result.version).toEqual("New Feature Title:2025.01.17");
+        expect(result.formattedChanges).toEqual(
+          "Older Feature (2025.01.15)\n\nNew Feature Title (2025.01.17)\n\nhttps://gemini.google/release-notes/"
+        );
+      });
+    });
+
+    describe("ChatGPT", () => {
+      it("single update", async () => {
+        vi.mocked(hashStore.readStoredData).mockReturnValue({
+          identifier: "January 10, 2026",
+        });
+        mockWaybackFetch(
+          sampleChatGPTHtml,
+          "20260117120000",
+          "https://help.openai.com/chatgpt-release-notes"
+        );
+
+        const result = await checkSource(mockChatGPTSource);
+
+        expect(result.hasChanged).toBe(true);
+        expect(result.version).toEqual("New Feature Title:January 17, 2026");
+        expect(result.formattedChanges).toEqual(
+          `New Feature Title (January 17, 2026)\n\n${mockChatGPTSource.releasePageUrl}`
+        );
+      });
+
+      it("multiple missed updates — oldest first, URL once at end", async () => {
+        vi.mocked(hashStore.readStoredData).mockReturnValue({
+          identifier: "January 1, 2026",
+        });
+        mockWaybackFetch(
+          sampleChatGPTHtml,
+          "20260117120000",
+          "https://help.openai.com/chatgpt-release-notes"
+        );
+
+        const result = await checkSource(mockChatGPTSource);
+
+        expect(result.hasChanged).toBe(true);
+        expect(result.version).toEqual("New Feature Title:January 17, 2026");
+        expect(result.formattedChanges).toEqual(
+          `Older update (January 10, 2026)\n\nNew Feature Title (January 17, 2026)\n\n${mockChatGPTSource.releasePageUrl}`
+        );
+      });
+    });
+
+    describe("Claude Blog", () => {
+      it("single new post — per-post article URL", async () => {
+        vi.mocked(hashStore.readStoredData).mockReturnValue({
+          identifier: "Claude gets memory",
+        });
+        mockWaybackFetch(
+          sampleBlogHtml,
+          "20260210120000",
+          "https://claude.com/blog"
+        );
+
+        const result = await checkSource(mockClaudeBlogSource);
+
+        expect(result.hasChanged).toBe(true);
+        expect(result.version).toEqual(
+          "Introducing Claude 4.5:February 10, 2026"
+        );
+        expect(result.formattedChanges).toEqual(
+          "Introducing Claude 4.5 (February 10, 2026): https://claude.com/blog/introducing-claude-4-5"
+        );
+      });
+
+      it("multiple new posts — oldest first, per-post article URLs", async () => {
+        vi.mocked(hashStore.readStoredData).mockReturnValue({
+          identifier: "Model Card update",
+        });
+        mockWaybackFetch(
+          sampleBlogHtml,
+          "20260210120000",
+          "https://claude.com/blog"
+        );
+
+        const result = await checkSource(mockClaudeBlogSource);
+
+        expect(result.hasChanged).toBe(true);
+        expect(result.version).toEqual(
+          "Introducing Claude 4.5:February 10, 2026"
+        );
+        expect(result.formattedChanges).toEqual(
+          "Claude gets memory (January 28, 2026): https://claude.com/blog/claude-gets-memory\n\nIntroducing Claude 4.5 (February 10, 2026): https://claude.com/blog/introducing-claude-4-5"
+        );
+      });
+    });
+  });
+
   describe("error handling", () => {
     it("handles unknown parser type", async () => {
       vi.mocked(hashStore.readStoredData).mockReturnValue(null);

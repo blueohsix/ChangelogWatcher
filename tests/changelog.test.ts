@@ -727,6 +727,19 @@ describe("getNewBlogPosts", () => {
     expect(result).toHaveLength(0);
   });
 
+  it("returns empty when featured post differs from stored but no new posts exist", () => {
+    // Simulates the false positive bug: featured post at index 0 has a different
+    // title than stored, but there are no actually new posts (all are older)
+    const postsWithFeatured = [
+      { title: "Old Featured Post", date: "October 1, 2025" },    // featured, older
+      { title: "Newest Post", date: "January 28, 2026" },          // chronological, this is stored
+      { title: "Older Post", date: "January 15, 2026" },           // older
+    ];
+    const result = getNewBlogPosts(postsWithFeatured, "Newest Post");
+    // "Old Featured Post" is before stored index but older by date — should be filtered out
+    expect(result).toHaveLength(0);
+  });
+
   it("filters out featured-section posts older than stored post's date", () => {
     // Simulates page with featured section (old posts) before chronological list
     const postsWithFeatured = [

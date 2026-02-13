@@ -6,7 +6,11 @@ on:
   workflow_dispatch:
     inputs:
       test:
-        description: 'Send notifications to the test channel'
+        description: 'Send notifications with `"test":"yes"`'
+        type: boolean
+        default: false
+      dry-run:
+        description: 'Dry run. No notifications. Update states.'
         type: boolean
         default: false
 
@@ -27,7 +31,11 @@ jobs:
         run: npm ci
 
       - name: Check changelogs
-        run: npm run check ${{ github.event.inputs.test == 'true' && '-- --test' || '' }}
+        run: |
+          FLAGS=""
+          if [ "${{ github.event.inputs.test }}" = "true" ]; then FLAGS="$FLAGS --test"; fi
+          if [ "${{ github.event.inputs.dry-run }}" = "true" ]; then FLAGS="$FLAGS --dry-run"; fi
+          npm run check ${FLAGS:+-- $FLAGS}
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
