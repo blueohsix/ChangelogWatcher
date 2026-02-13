@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       test:
-        description: 'Send notifications with `"test":"yes"`'
+        description: 'Send notifications with "test":"yes". Do not update states.'
         type: boolean
         default: false
       dry-run:
