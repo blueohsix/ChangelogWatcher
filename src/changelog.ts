@@ -585,10 +585,10 @@ async function parseWayback(
   const newEntries = getNewDateEntries(allEntries, storedIdentifier, source.parserType);
 
   if (newEntries.length === 0) {
-    // No new entries — return current newest for comparison
+    // No new entries — return stored identifier so checkSource sees no change
     return {
       success: true,
-      version: allEntries[0].date,
+      version: storedIdentifier!,
       content: {
         version: `${allEntries[0].title}:${allEntries[0].date}`,
         formattedChanges: "",
@@ -630,10 +630,10 @@ function parseBlogContent(
   const newPosts = getNewBlogPosts(posts, storedTitle);
 
   if (newPosts.length === 0) {
-    // No new posts — return current newest for comparison
+    // No new posts — return stored title so checkSource sees no change
     return {
       success: true,
-      version: posts[0].title,
+      version: storedTitle!,
       content: {
         version: `${posts[0].title}:${posts[0].date}`,
         formattedChanges: "",
@@ -717,6 +717,12 @@ export async function checkSource(source: ReleaseSource, options?: CheckOptions)
       log.warn(
         `  Extracted ${result.version} is not newer than stored ${storedVersion}, skipping`
       );
+      return { source, hasChanged: false };
+    }
+
+    // Guard: if parser returned a change but no content, treat as no change
+    if (!result.content?.formattedChanges) {
+      log.warn(`  Parser returned change without content, skipping`);
       return { source, hasChanged: false };
     }
 

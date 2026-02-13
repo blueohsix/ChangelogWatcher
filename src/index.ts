@@ -104,8 +104,8 @@ async function main(): Promise<void> {
 
     const slackResult = await sendSlackNotification(SLACK_WEBHOOK_URL, {
       source: source.name,
-      version: result.version || "Update detected",
-      changes: result.formattedChanges || `Check: ${source.releasePageUrl}`,
+      version: result.version!,
+      changes: result.formattedChanges!,
       test: testMode ? "yes" : "no",
     });
 
