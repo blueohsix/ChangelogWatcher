@@ -34,10 +34,13 @@ npm run test:coverage      # Generate coverage reports
 
 ## How It Works
 
-1. Fetches changelog content from configured URLs
-2. Extracts version/date identifier from each source
+1. Fetches changelog content (directly for markdown sources, via Wayback Machine CDX API → snapshot for wayback sources)
+2. Extracts identifier: semver (Claude Code), date entry title+date (Gemini/ChatGPT), or blog post title (Claude Blog)
 3. Compares with stored state in `.data/*.json`
-4. If changed: sends Slack notification, saves new state
+4. If changed: saves new state, then sends Slack notification
+   - `--dry-run`: saves state but skips notification
+   - `--test`: sends notification (with `"test":"yes"`) but skips state save
+5. Triggers Wayback Machine to save fresh snapshots for wayback sources
 
 ## Parser Types
 
@@ -58,8 +61,11 @@ A single Slack webhook URL is used for all sources (Slack handles routing intern
 
 ## Adding a New Source
 
-1. Add entry to `SOURCES` in `src/config.ts`
-2. No webhook changes needed — the single `SLACK_WEBHOOK_URL` handles all sources
+1. Add the id to `SourceId` type in `src/config.ts`
+2. Add entry to `SOURCES` record in `src/config.ts`
+3. Add the id to `VALID_TARGETS` in `src/index.ts`
+4. Optionally add an npm script in `package.json` (e.g. `check:newsource`)
+5. No webhook changes needed — the single `SLACK_WEBHOOK_URL` handles all sources
 
 ## Design Principles
 
